@@ -50,6 +50,7 @@ async def send_fall_notification(
     max_velocity: float,
     body_angle: float,
     confidence: float,
+    clip_url: str | None = None,
 ) -> None:
     if _firebase_app is None:
         return
@@ -74,6 +75,7 @@ async def send_fall_notification(
             "max_velocity": str(round(max_velocity, 2)),
             "body_angle":   str(round(body_angle, 2)),
             "confidence":   str(round(confidence, 2)),
+            **({"clip_url": clip_url} if clip_url else {}),
         },
         android=messaging.AndroidConfig(
             priority="high",

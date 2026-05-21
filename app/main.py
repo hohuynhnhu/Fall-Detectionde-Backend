@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .db.database import DATABASE_URL, init_db
 from .services.fcm import init_fcm
-from .api import auth, config, dashboard, devices, events, family_members, websocket
+from .api import auth, config, contacts, dashboard, devices, events, family_members, websocket
 
 
 @asynccontextmanager
@@ -37,6 +37,7 @@ app.include_router(websocket.router, prefix="/ws",    tags=["WebSocket"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(devices.router,         prefix="/devices",        tags=["Devices"])
 app.include_router(family_members.router,  prefix="/family-members", tags=["Family Members"])
+app.include_router(contacts.router,        prefix="/api/contacts",   tags=["Emergency Contacts"])
 
 
 @app.get("/health", tags=["Health"])

@@ -7,7 +7,14 @@
       "Bash(curl -s http://localhost:8000/health)",
       "Bash(curl -s http://localhost:8000/docs)",
       "Bash(.venv\\\\Scripts\\\\python.exe -c \"from app.api.config import router; from app.schemas import FeatureConfig, FeatureConfigUpdate, ThresholdConfig, ThresholdConfigUpdate; from app.db.models import FeatureConfigDB, ThresholdConfigDB; print\\('OK'\\)\")",
-      "Bash(echo. *)"
+      "Bash(echo. *)",
+      "Bash(Get-ChildItem -Path \"D:\\\\luan_van\\\\fall-detection-backend\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(ConvertTo-Csv -NoTypeInformation)",
+      "Bash(Out-String)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\luan_van\\\\fall-detection-backend\" -Depth 3 | ForEach-Object { $_.FullName.Replace\\('D:\\\\luan_van\\\\fall-detection-backend\\\\', ''\\) } | Where-Object { $_ -notmatch '\\\\.git|__pycache__|\\\\.pytest' } | Sort-Object)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import jwt; print\\('PyJWT', jwt.__version__\\)\")"
     ]
   }
 }

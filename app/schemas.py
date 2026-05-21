@@ -96,16 +96,17 @@ class BodyMetricsPayload(BaseModel):
 
 
 class FallEvent(BaseModel):
-    event_type:       EventType  = EventType.FALL
-    camera_id:        str        = "cam_0"
-    timestamp:        float      = 0.0
-    state:            PoseState  = PoseState.FALLING
-    state_before:     PoseState  = PoseState.STANDING
-    velocity_px_per_s: float     = 0.0
-    max_velocity:     float      = 0.0
-    body_angle:       float      = 0.0
-    confidence:       float      = 0.0
-    frame_id:         int        = 0
+    event_type:       EventType     = EventType.FALL
+    camera_id:        str           = "cam_0"
+    timestamp:        float         = 0.0
+    state:            PoseState     = PoseState.FALLING
+    state_before:     PoseState     = PoseState.STANDING
+    velocity_px_per_s: float        = 0.0
+    max_velocity:     float         = 0.0
+    body_angle:       float         = 0.0
+    confidence:       float         = 0.0
+    frame_id:         int           = 0
+    clip_url:         Optional[str] = None
 
 
 class PoseEvent(BaseModel):
@@ -148,6 +149,8 @@ class FallEventResponse(BaseModel):
     body_angle:   Optional[float]
     confidence:   Optional[float]
     acknowledged: bool
+    clip_url:     Optional[str]     = None
+    datetime_vn:  Optional[str]     = None
 
     model_config = {"from_attributes": True}
 
@@ -201,12 +204,13 @@ class FamilyMemberResponse(BaseModel):
 # ── WebSocket broadcast messages ──────────────────────────────────────────────
 
 class WsFallAlert(BaseModel):
-    type:       str       = "fall_alert"
+    type:       str           = "fall_alert"
     camera_id:  str
     timestamp:  float
     velocity:   float
     body_angle: float
     confidence: float
+    clip_url:   Optional[str] = None
 
 
 class WsStateUpdate(BaseModel):

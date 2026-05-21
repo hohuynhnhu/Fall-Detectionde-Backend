@@ -5,6 +5,7 @@ from typing import AsyncGenerator
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -49,6 +50,16 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         from . import models  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
+        # Migrations for columns added after initial deploy
+        await conn.execute(
+            text("ALTER TABLE fall_events ADD COLUMN IF NOT EXISTS clip_url VARCHAR(512)")
+        )
+        await conn.execute(
+            text("ALTER TABLE emergency_contacts ADD COLUMN IF NOT EXISTS relation VARCHAR(64)")
+        )
+        await conn.execute(
+            text("ALTER TABLE emergency_contacts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE")
+        )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

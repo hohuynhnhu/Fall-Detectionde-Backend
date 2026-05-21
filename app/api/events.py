@@ -9,15 +9,19 @@ GET  /events/live        — mobile  ← backend (latest state per camera)
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
+from datetime import datetime, timezone, timedelta
+
+_VN_TZ = timezone(timedelta(hours=7))
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.database import get_db
-from ..db.models import FallEventDB, PersonDetectedDB, PoseEventDB
+from ..db.models import EmergencyContactDB, FallEventDB, PersonDetectedDB, PoseEventDB, UserCameraDB
 from ..schemas import (
     FallEvent,
     FallEventResponse,
@@ -32,8 +36,39 @@ from ..schemas import (
 )
 from ..services.websocket_manager import manager
 from ..services.fcm import send_fall_notification
-
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _get_active_phones_for_camera(
+    db: AsyncSession, camera_id: str
+) -> dict[str, list[str]]:
+    """
+    Return {patient_id: [phones]} for all users linked to camera_id,
+    filtering only is_active contacts.
+    """
+    cam_rows = (
+        await db.execute(
+            select(UserCameraDB).where(UserCameraDB.camera_id == camera_id)
+        )
+    ).scalars().all()
+
+    result: dict[str, list[str]] = {}
+    for cam in cam_rows:
+        contacts = (
+            await db.execute(
+                select(EmergencyContactDB).where(
+                    EmergencyContactDB.user_id  == cam.user_id,
+                    EmergencyContactDB.is_active == True,  # noqa: E712
+                )
+            )
+        ).scalars().all()
+        phones = [c.phone for c in contacts if c.phone]
+        if phones:
+            result[f"user_{cam.user_id}"] = phones
+    return result
 
 
 # ── Ingest endpoints (desktop → backend) ─────────────────────────────────────
@@ -54,6 +89,7 @@ async def receive_fall(
         body_angle    = event.body_angle,
         confidence    = event.confidence,
         frame_id      = event.frame_id,
+        clip_url      = event.clip_url,
     )
     db.add(row)
     await db.commit()
@@ -66,6 +102,7 @@ async def receive_fall(
         velocity   = event.max_velocity,
         body_angle = event.body_angle,
         confidence = event.confidence,
+        clip_url   = event.clip_url,
     )
     await manager.broadcast(alert.model_dump())
 
@@ -76,6 +113,7 @@ async def receive_fall(
         max_velocity= event.max_velocity,
         body_angle  = event.body_angle,
         confidence  = event.confidence,
+        clip_url    = event.clip_url,
     )
 
     return {"ok": True, "id": row.id}
@@ -202,6 +240,8 @@ async def list_falls(
             body_angle   = r.body_angle,
             confidence   = r.confidence,
             acknowledged = r.acknowledged,
+            clip_url     = r.clip_url,
+            datetime_vn  = datetime.fromtimestamp(r.timestamp, tz=_VN_TZ).strftime("%H:%M %d/%m/%Y"),
         )
         for r in rows
     ]

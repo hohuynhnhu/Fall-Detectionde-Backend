@@ -19,6 +19,7 @@ class FallEventDB(Base):
     body_angle    = Column(Float)
     confidence    = Column(Float)
     frame_id      = Column(Integer)
+    clip_url      = Column(String(512), nullable=True)
     acknowledged  = Column(Boolean, default=False, nullable=False)
 
 
@@ -118,3 +119,15 @@ class FamilyMemberDB(Base):
     relationship   = Column(String(64), nullable=True)
     notify_on_fall = Column(Boolean, default=True, nullable=False)
     created_at     = Column(Float, default=time.time, nullable=False)
+
+
+class EmergencyContactDB(Base):
+    __tablename__ = "emergency_contacts"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    user_id    = Column(Integer, nullable=False, index=True)
+    name       = Column(String(128), nullable=False)
+    phone      = Column(String(32), nullable=False)
+    relation   = Column(String(64), nullable=True)
+    is_active  = Column(Boolean, default=True, nullable=False)
+    created_at = Column(Float, default=time.time, nullable=False)

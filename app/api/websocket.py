@@ -12,7 +12,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from ..services.websocket_manager import manager
+from ..services.websocket_manager import desktop_manager, manager
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,10 +23,28 @@ async def live_ws(ws: WebSocket) -> None:
     await manager.connect(ws)
     try:
         while True:
-            # Keep the connection alive; clients may send pings as plain text
-            await ws.receive_text()
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
     except WebSocketDisconnect:
-        await manager.disconnect(ws)
+        pass
     except Exception as exc:
         log.warning("WS error: %s", exc)
+    finally:
         await manager.disconnect(ws)
+
+
+@router.websocket("/desktop")
+async def desktop_ws(ws: WebSocket) -> None:
+    await desktop_manager.connect(ws)
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        log.warning("Desktop WS error: %s", exc)
+    finally:
+        await desktop_manager.disconnect(ws)

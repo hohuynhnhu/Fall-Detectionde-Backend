@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+import os
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.models import UserCameraDB, UserDB
+from ..db.models import UserDB
+
+# Danh sách email được tự động cấp quyền admin (cách nhau bởi dấu phẩy)
+_ADMIN_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+}
 
 
 async def upsert_user(db: AsyncSession, decoded: dict) -> UserDB:
@@ -11,12 +20,16 @@ async def upsert_user(db: AsyncSession, decoded: dict) -> UserDB:
     result = await db.execute(select(UserDB).where(UserDB.firebase_uid == uid))
     user = result.scalar_one_or_none()
 
+    email = decoded.get("email") or ""
+
     if user is None:
+        role = "admin" if email.lower() in _ADMIN_EMAILS else "user"
         user = UserDB(
             firebase_uid=uid,
-            email=decoded.get("email"),
+            email=email or None,
             phone_number=decoded.get("phone_number"),
             display_name=decoded.get("name"),
+            role=role,
         )
         db.add(user)
     else:
@@ -26,6 +39,9 @@ async def upsert_user(db: AsyncSession, decoded: dict) -> UserDB:
             user.phone_number = decoded["phone_number"]
         if decoded.get("name"):
             user.display_name = decoded["name"]
+        # Tự động nâng cấp admin nếu email nằm trong ADMIN_EMAILS
+        if email.lower() in _ADMIN_EMAILS and user.role != "admin":
+            user.role = "admin"
 
     await db.commit()
     await db.refresh(user)
@@ -35,39 +51,3 @@ async def upsert_user(db: AsyncSession, decoded: dict) -> UserDB:
 async def get_user_by_uid(db: AsyncSession, firebase_uid: str) -> UserDB | None:
     result = await db.execute(select(UserDB).where(UserDB.firebase_uid == firebase_uid))
     return result.scalar_one_or_none()
-
-
-async def add_camera(db: AsyncSession, user_id: int, camera_id: str, label: str | None = None) -> UserCameraDB:
-    existing = await db.execute(
-        select(UserCameraDB).where(
-            UserCameraDB.user_id == user_id,
-            UserCameraDB.camera_id == camera_id,
-        )
-    )
-    uc = existing.scalar_one_or_none()
-
-    if uc:
-        uc.label = label
-    else:
-        uc = UserCameraDB(user_id=user_id, camera_id=camera_id, label=label)
-        db.add(uc)
-
-    await db.commit()
-    await db.refresh(uc)
-    return uc
-
-
-async def remove_camera(db: AsyncSession, user_id: int, camera_id: str) -> bool:
-    result = await db.execute(
-        delete(UserCameraDB).where(
-            UserCameraDB.user_id == user_id,
-            UserCameraDB.camera_id == camera_id,
-        )
-    )
-    await db.commit()
-    return result.rowcount > 0
-
-
-async def get_user_cameras(db: AsyncSession, user_id: int) -> list[UserCameraDB]:
-    result = await db.execute(select(UserCameraDB).where(UserCameraDB.user_id == user_id))
-    return list(result.scalars().all())

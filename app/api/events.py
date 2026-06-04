@@ -9,67 +9,96 @@ GET  /events/live        — mobile  ← backend (latest state per camera)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
-from datetime import datetime, timezone, timedelta
-
-_VN_TZ = timezone(timedelta(hours=7))
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.database import get_db
-from ..db.models import EmergencyContactDB, FallEventDB, PersonDetectedDB, PoseEventDB, UserCameraDB
+from ..constants import _VN_TZ
+from ..db.database import AsyncSessionLocal, get_db
+from ..db.models import FallEventDB, FamilyMemberDB, PersonDetectedDB, PoseEventDB, UserDB
 from ..schemas import (
     FallEvent,
     FallEventResponse,
     HeartbeatEvent,
     LiveCameraState,
     PaginatedResponse,
+    PatientPoseEvent,
     PersonDetectedPayload,
     PoseEvent,
+    PoseEventResponse,
     PoseState,
     WsFallAlert,
+    WsPatientPoseUpdate,
     WsStateUpdate,
 )
 from ..services.websocket_manager import manager
-from ..services.fcm import send_fall_notification
+from ..services.fcm import send_fall_notification, send_pose_notification
+from ..services.dependencies import get_current_user
+from ..services.alert_service import alert_fall_via_adb
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _create_tracked_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _get_active_phones_for_camera(
-    db: AsyncSession, camera_id: str
-) -> dict[str, list[str]]:
-    """
-    Return {patient_id: [phones]} for all users linked to camera_id,
-    filtering only is_active contacts.
-    """
-    cam_rows = (
-        await db.execute(
-            select(UserCameraDB).where(UserCameraDB.camera_id == camera_id)
-        )
-    ).scalars().all()
-
-    result: dict[str, list[str]] = {}
-    for cam in cam_rows:
-        contacts = (
-            await db.execute(
-                select(EmergencyContactDB).where(
-                    EmergencyContactDB.user_id  == cam.user_id,
-                    EmergencyContactDB.is_active == True,  # noqa: E712
+async def _dispatch_pose_notifications(camera_id: str, state: str, timestamp: float, event_id: int | None = None) -> None:
+    """Background task: gửi FCM về trạng thái bệnh nhân cho mọi bệnh nhân đang được theo dõi bởi camera này."""
+    try:
+        async with AsyncSessionLocal() as db:
+            patients = (await db.execute(
+                select(FamilyMemberDB).where(
+                    FamilyMemberDB.camera_id  == camera_id,
+                    FamilyMemberDB.is_patient == True,  # noqa: E712
                 )
-            )
-        ).scalars().all()
-        phones = [c.phone for c in contacts if c.phone]
-        if phones:
-            result[f"user_{cam.user_id}"] = phones
-    return result
+            )).scalars().all()
+            for patient in patients:
+                await send_pose_notification(db, patient.name, camera_id, state, timestamp, event_id=event_id)
+    except Exception:
+        logger.exception("Pose notification task failed for camera %s", camera_id)
 
+async def _dispatch_single_patient_notification(
+    person_id: str, person_name: str,
+    camera_id: str, state: str,
+    timestamp: float, event_id: int | None = None,
+    prev_state: str | None = None, 
+) -> None:
+    """Gửi FCM cho đúng 1 bệnh nhân theo person_id."""
+    try:
+        async with AsyncSessionLocal() as db:
+            patient = (await db.execute(
+                select(FamilyMemberDB).where(
+                    FamilyMemberDB.person_id  == person_id,
+                    FamilyMemberDB.is_patient == True,
+                )
+            )).scalar_one_or_none()
+
+            if patient is None:
+                return
+
+            await send_pose_notification(
+                db, patient.name, camera_id,
+                state, timestamp, event_id=event_id,
+                prev_state=prev_state,
+            )
+    except Exception:
+        logger.exception("Single patient notification failed for %s", person_id)
 
 # ── Ingest endpoints (desktop → backend) ─────────────────────────────────────
 
@@ -113,8 +142,25 @@ async def receive_fall(
         max_velocity= event.max_velocity,
         body_angle  = event.body_angle,
         confidence  = event.confidence,
+        event_id    = row.id,
         clip_url    = event.clip_url,
     )
+
+    # ADB alert — gửi SMS + gọi điện qua Android kết nối USB
+    contacts_rows = (await db.execute(
+        select(FamilyMemberDB).where(
+            FamilyMemberDB.notify_on_fall == True,  # noqa: E712
+        )
+    )).scalars().all()
+    contacts = [
+        {"name": c.name, "phone": c.phone_number}
+        for c in contacts_rows
+        if c.phone_number
+    ]
+    if contacts:
+        _create_tracked_task(
+            alert_fall_via_adb(contacts, camera_id=event.camera_id)
+        )
 
     return {"ok": True, "id": row.id}
 
@@ -137,6 +183,10 @@ async def receive_pose(
     )
     db.add(row)
     await db.commit()
+    await db.refresh(row)
+
+    # FCM push chỉ cho đúng bệnh nhân này, không phải tất cả
+    # _create_tracked_task(_dispatch_pose_notifications(event.camera_id, event.state.value, ts, event_id=row.id))
 
     return {"ok": True}
 
@@ -256,6 +306,122 @@ async def list_falls(
     )
 
 
+_patient_pose_last_sent: dict[str, tuple[str, float]] = {}
+_PATIENT_POSE_DEBOUNCE = 15.0
+
+@router.post("/patient-pose", summary="[Desktop] Nhận sự kiện tư thế bệnh nhân (có nhận diện khuôn mặt)")
+async def receive_patient_pose(
+    event: PatientPoseEvent,
+    db:    AsyncSession = Depends(get_db),
+) -> dict:
+    ts = event.timestamp or time.time()
+    pid = event.person_id
+    new_state = event.state.value
+
+    # Debounce: bỏ qua nếu cùng state trong 15 giây
+    last_state, last_ts = _patient_pose_last_sent.get(pid, (None, 0.0))
+    print(f"[PatientPose] pid={pid[:8]} state={new_state} last={last_state} gap={ts-last_ts:.1f}s")
+    if last_state == new_state and (ts - last_ts) < _PATIENT_POSE_DEBOUNCE:
+        print(f"[PatientPose] SKIPPED debounce")
+        return {"ok": True, "skipped": True}
+
+    _patient_pose_last_sent[pid] = (new_state, ts)
+
+    row = PoseEventDB(
+        camera_id   = event.camera_id,
+        timestamp   = ts,
+        state       = new_state,
+        prev_state  = event.prev_state.value if event.prev_state else None,
+        person_id   = pid,
+        person_name = event.person_name,
+        frame_id    = event.frame_id,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    print(f"[PatientPose] SEND FCM pid={pid[:8]} state={new_state} event_id={row.id}")
+    _create_tracked_task(_dispatch_single_patient_notification(
+        pid, event.person_name, event.camera_id,
+        new_state, ts, event_id=row.id,
+        prev_state=event.prev_state.value if event.prev_state else None,
+    ))
+
+    return {"ok": True, "id": row.id}
+
+@router.get(
+    "/patient-poses",
+    response_model=PaginatedResponse[PoseEventResponse],
+    summary="[Mobile] Lịch sử tư thế bệnh nhân — phân trang",
+)
+async def list_patient_poses(
+    page:      int          = Query(1,    ge=1),
+    page_size: int          = Query(20,   ge=1, le=100),
+    person_id: str | None   = Query(None, description="Lọc theo person_id"),
+    date_from: float | None = Query(None, description="Unix timestamp — từ"),
+    date_to:   float | None = Query(None, description="Unix timestamp — đến"),
+    current_user: UserDB       = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> PaginatedResponse[PoseEventResponse]:
+
+    member_pids: list[str] = (await db.execute(
+        select(FamilyMemberDB.person_id).where(
+            FamilyMemberDB.user_id    == current_user.id,
+            FamilyMemberDB.person_id.isnot(None),
+        )
+    )).scalars().all()
+
+    base_q = (
+        select(PoseEventDB)
+        .where(PoseEventDB.person_id.in_(member_pids))
+        .order_by(desc(PoseEventDB.timestamp))
+    )
+    count_q = (
+        select(func.count())
+        .select_from(PoseEventDB)
+        .where(PoseEventDB.person_id.in_(member_pids))
+    )
+
+    if person_id:
+        base_q  = base_q.where(PoseEventDB.person_id  == person_id)
+        count_q = count_q.where(PoseEventDB.person_id == person_id)
+    if date_from is not None:
+        base_q  = base_q.where(PoseEventDB.timestamp >= date_from)
+        count_q = count_q.where(PoseEventDB.timestamp >= date_from)
+    if date_to is not None:
+        base_q  = base_q.where(PoseEventDB.timestamp <  date_to)
+        count_q = count_q.where(PoseEventDB.timestamp <  date_to)
+
+    total: int       = (await db.execute(count_q)).scalar() or 0
+    total_pages: int = max(1, math.ceil(total / page_size))
+    offset: int      = (page - 1) * page_size
+
+    rows = (await db.execute(base_q.offset(offset).limit(page_size))).scalars().all()
+
+    return PaginatedResponse(
+        ok          = True,
+        items       = [
+            PoseEventResponse(
+                id          = r.id,
+                camera_id   = r.camera_id,
+                timestamp   = r.timestamp,
+                state       = r.state,
+                prev_state  = r.prev_state,
+                person_id   = r.person_id,
+                person_name = r.person_name,
+                frame_id    = r.frame_id,
+                datetime_vn = datetime.fromtimestamp(r.timestamp, tz=_VN_TZ)
+                              .strftime("%H:%M %d/%m/%Y"),
+            )
+            for r in rows
+        ],
+        total       = total,
+        page        = page,
+        page_size   = page_size,
+        total_pages = total_pages,
+    )
+
+
 @router.get(
     "/live",
     response_model=list[LiveCameraState],
@@ -277,6 +443,7 @@ async def get_live_states(
             body_angle = s.get("body_angle", 0.0),
             fps        = s.get("fps", 0.0),
             timestamp  = s.get("timestamp", 0.0),
+            online     = s.get("online", False),
         )
         for s in states
     ]

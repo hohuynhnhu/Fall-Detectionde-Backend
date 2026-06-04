@@ -1,3 +1,4 @@
+#services/firebase_service.py
 from __future__ import annotations
 
 import asyncio
@@ -18,16 +19,18 @@ def _get_app() -> firebase_admin.App:
         return firebase_admin.initialize_app(cred)
 
 
-async def verify_id_token(token: str) -> dict:
+async def verify_id_token(token: str, check_revoked: bool = False) -> dict:
     _get_app()
-    loop = asyncio.get_event_loop()
-    decoded = await loop.run_in_executor(None, partial(auth.verify_id_token, token, clock_skew_seconds=10))
+    loop = asyncio.get_running_loop()
+    decoded = await loop.run_in_executor(
+        None, partial(auth.verify_id_token, token, clock_skew_seconds=10, check_revoked=check_revoked)
+    )
     return decoded
 
 
 async def create_email_user(email: str, password: str, display_name: str | None = None) -> dict:
     _get_app()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     kwargs: dict = {"email": email, "password": password}
     if display_name:
@@ -58,11 +61,23 @@ async def sign_in_with_email(email: str, password: str) -> dict:
 
 async def update_user_password(firebase_uid: str, new_password: str) -> None:
     _get_app()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, partial(auth.update_user, firebase_uid, password=new_password))
+
+
+async def update_firebase_user(firebase_uid: str, **kwargs) -> None:
+    _get_app()
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, partial(auth.update_user, firebase_uid, **kwargs))
+
+
+async def revoke_refresh_tokens(firebase_uid: str) -> None:
+    _get_app()
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, partial(auth.revoke_refresh_tokens, firebase_uid))
 
 
 async def delete_firebase_user(firebase_uid: str) -> None:
     _get_app()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, partial(auth.delete_user, firebase_uid))

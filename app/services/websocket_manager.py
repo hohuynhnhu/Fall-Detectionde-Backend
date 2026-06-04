@@ -39,7 +39,7 @@ class WebSocketManager:
         if self._live_states:
             snapshot = {
                 "type":   "snapshot",
-                "states": list(self._live_states.values()),
+                "states": self.get_live_states(),
             }
             try:
                 await ws.send_text(json.dumps(snapshot))
@@ -77,16 +77,23 @@ class WebSocketManager:
 
     # ── Live-state cache ──────────────────────────────────────────────────────
 
+    _ONLINE_TTL = 30  # seconds without heartbeat → offline
+
     def update_live_state(self, camera_id: str, state: dict) -> None:
-        """Merge *state* into the per-camera snapshot (no lock needed for dict writes in CPython)."""
-        self._live_states[camera_id] = {**state, "camera_id": camera_id}
+        self._live_states[camera_id] = {**state, "camera_id": camera_id, "last_seen": time.time()}
 
     def get_live_states(self) -> List[dict]:
-        """Return a snapshot list — one entry per camera."""
-        return list(self._live_states.values())
+        now = time.time()
+        return [
+            {**s, "online": (now - s.get("last_seen", 0)) < self._ONLINE_TTL}
+            for s in self._live_states.values()
+        ]
 
     def get_live_state(self, camera_id: str) -> dict | None:
-        return self._live_states.get(camera_id)
+        s = self._live_states.get(camera_id)
+        if s is None:
+            return None
+        return {**s, "online": (time.time() - s.get("last_seen", 0)) < self._ONLINE_TTL}
 
     @property
     def connection_count(self) -> int:
@@ -95,3 +102,6 @@ class WebSocketManager:
 
 # Singleton shared across the application
 manager = WebSocketManager()
+
+# Separate manager for desktop clients (face registration events)
+desktop_manager = WebSocketManager()

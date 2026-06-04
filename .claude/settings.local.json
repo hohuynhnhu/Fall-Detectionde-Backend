@@ -14,7 +14,9 @@
       "Bash(Out-String)",
       "PowerShell(Get-ChildItem -Path \"D:\\\\luan_van\\\\fall-detection-backend\" -Depth 3 | ForEach-Object { $_.FullName.Replace\\('D:\\\\luan_van\\\\fall-detection-backend\\\\', ''\\) } | Where-Object { $_ -notmatch '\\\\.git|__pycache__|\\\\.pytest' } | Sort-Object)",
       "Bash(python -c ' *)",
-      "Bash(python -c \"import jwt; print\\('PyJWT', jwt.__version__\\)\")"
+      "Bash(python -c \"import jwt; print\\('PyJWT', jwt.__version__\\)\")",
+      "Bash(python -m py_compile app/api/admin.py)",
+      "Bash(python *)"
     ]
   }
 }

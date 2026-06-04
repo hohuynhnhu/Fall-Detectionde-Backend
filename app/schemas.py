@@ -5,7 +5,7 @@ Covers: inbound events from desktop, outbound API responses, config, WebSocket m
 from __future__ import annotations
 
 from enum import Enum
-from typing import Generic, List, Optional, TypeVar
+from typing import Generic, List, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -175,11 +175,27 @@ class LiveCameraState(BaseModel):
     body_angle: float
     fps:        float
     timestamp:  float
+    online:     bool = False
 
 
 # ── WebSocket broadcast messages ──────────────────────────────────────────────
 
 # ── Family members ────────────────────────────────────────────────────────────
+
+class RegisterFaceRequest(BaseModel):
+    name:           str
+    role:           Literal["family", "caregiver"] = "family"
+    is_patient:     bool = False
+    face_image_url: str
+
+
+class RegisterFaceResponse(BaseModel):
+    person_id:      str
+    name:           str
+    role:           str
+    is_patient:     bool
+    face_image_url: str
+
 
 class AddFamilyMemberPayload(BaseModel):
     name:           str
@@ -187,21 +203,114 @@ class AddFamilyMemberPayload(BaseModel):
     email:          Optional[str] = None
     relationship:   Optional[str] = None
     notify_on_fall: bool          = True
+    is_patient:     bool          = False
+    camera_id:      Optional[str] = None
+
+
+class UpdateFamilyMemberPayload(BaseModel):
+    name:           Optional[str]  = None
+    phone_number:   Optional[str]  = None
+    email:          Optional[str]  = None
+    relationship:   Optional[str]  = None
+    notify_on_fall: Optional[bool] = None
+    is_patient:     Optional[bool] = None
+    camera_id:      Optional[str]  = None
 
 
 class FamilyMemberResponse(BaseModel):
     id:             int
+    person_id:      Optional[str]
     name:           str
+    role:           Optional[str]
     phone_number:   Optional[str]
     email:          Optional[str]
     relationship:   Optional[str]
     notify_on_fall: bool
+    is_patient:     bool
+    camera_id:      Optional[str]
+    face_image_url: Optional[str]
     created_at:     float
 
     model_config = {"from_attributes": True}
 
 
 # ── WebSocket broadcast messages ──────────────────────────────────────────────
+
+# ── Face recognition logs ─────────────────────────────────────────────────────
+
+class FaceLogCreate(BaseModel):
+    """POST /face-logs — Desktop gửi sau mỗi lần nhận diện thành công."""
+    person_id:     str
+    name:          str
+    is_patient:    bool  = False
+    confidence:    float = 0.0
+    camera_id:     str   = "cam_0"
+    recognized_at: float = 0.0   # unix timestamp; 0 → server assigns time.time()
+
+
+class FaceLogResponse(BaseModel):
+    """Một lượt nhận diện — trả về bởi GET /face-logs."""
+    id:            int
+    person_id:     str
+    name:          str
+    is_patient:    bool
+    confidence:    Optional[float]
+    camera_id:     str
+    recognized_at: float
+    datetime_vn:   str             # "HH:MM DD/MM/YYYY"
+
+    model_config = {"from_attributes": True}
+
+
+class FaceLogSummaryItem(BaseModel):
+    person_id:   str
+    name:        str
+    is_patient:  bool
+    count_today: int
+
+
+class FaceLogSummaryResponse(BaseModel):
+    date:    str                       # "DD/MM/YYYY" — ngày thống kê
+    members: List[FaceLogSummaryItem]
+
+
+class PatientPoseEvent(BaseModel):
+    """POST /events/patient-pose — Desktop gửi khi bệnh nhân thay đổi tư thế."""
+    event_type:  str                  = "patient_pose"
+    camera_id:   str                  = "cam_0"
+    timestamp:   float                = 0.0
+    person_id:   str
+    person_name: str
+    state:       PoseState            = PoseState.UNKNOWN
+    prev_state:  Optional[PoseState]  = PoseState.UNKNOWN
+    frame_id:    int                  = 0
+
+
+class PoseEventResponse(BaseModel):
+    """Một lượt thay đổi tư thế — trả về bởi GET /events/patient-poses."""
+    id:          int
+    camera_id:   str
+    timestamp:   float
+    state:       Optional[str]
+    prev_state:  Optional[str]
+    person_id:   Optional[str]
+    person_name: Optional[str]
+    frame_id:    Optional[int]
+    datetime_vn: str
+
+    model_config = {"from_attributes": True}
+
+
+class WsPatientPoseUpdate(BaseModel):
+    type:        str                  = "patient_pose"
+    camera_id:   str
+    timestamp:   float
+    person_id:   str
+    person_name: str
+    state:       PoseState
+    prev_state:  Optional[PoseState]  = None
+    frame_id:    int
+
 
 class WsFallAlert(BaseModel):
     type:       str           = "fall_alert"
@@ -221,3 +330,177 @@ class WsStateUpdate(BaseModel):
     body_angle: float
     fps:        float
     timestamp:  float
+
+
+# ── Auth responses ────────────────────────────────────────────────────────────
+
+class UserResponse(BaseModel):
+    id:             int
+    firebase_uid:   str
+    email:          Optional[str]
+    phone_number:   Optional[str]
+    display_name:   Optional[str]
+    avatar_url:     Optional[str]
+    email_verified: bool
+    role:           str
+    is_active:      bool
+
+    model_config = {"from_attributes": True}
+
+
+class LoginResponse(BaseModel):
+    id_token:      str
+    refresh_token: str
+    expires_in:    str
+    user:          UserResponse
+
+
+# ── Admin schemas ─────────────────────────────────────────────────────────────
+
+class AdminUserResponse(BaseModel):
+    id:             int
+    firebase_uid:   str
+    email:          Optional[str]
+    phone_number:   Optional[str]
+    display_name:   Optional[str]
+    avatar_url:     Optional[str]
+    email_verified: bool
+    role:           str
+    is_active:      bool
+    created_at:     float
+
+    model_config = {"from_attributes": True}
+
+
+class AdminUserListResponse(BaseModel):
+    ok:          bool = True
+    items:       List[AdminUserResponse]
+    total:       int
+    page:        int
+    page_size:   int
+    total_pages: int
+
+
+class ChangeRoleRequest(BaseModel):
+    role: Literal["user", "admin"]
+
+
+class AdminUpdateProfileRequest(BaseModel):
+    display_name: Optional[str] = None
+    avatar_url:   Optional[str] = None
+
+
+class FamilyMemberItem(BaseModel):
+    id:             int
+    name:           str
+    phone_number:   Optional[str]
+    email:          Optional[str]
+    relationship:   Optional[str]
+    notify_on_fall: bool
+    is_patient:     bool
+    camera_id:      Optional[str]
+    created_at:     float
+
+    model_config = {"from_attributes": True}
+
+
+class EmergencyContactItem(BaseModel):
+    id:         int
+    name:       str
+    phone:      str
+    relation:   Optional[str]
+    is_active:  bool
+    created_at: float
+
+    model_config = {"from_attributes": True}
+
+
+class UserProfileResponse(BaseModel):
+    user:               AdminUserResponse
+    family_members:     List[FamilyMemberItem]
+    emergency_contacts: List[EmergencyContactItem]
+
+
+class FallItem(BaseModel):
+    id:           int
+    camera_id:    str
+    timestamp:    float
+    datetime_vn:  str
+    state_before: Optional[str]
+    velocity:     Optional[float]
+    max_velocity: Optional[float]
+    body_angle:   Optional[float]
+    confidence:   Optional[float]
+    acknowledged: bool
+    clip_url:     Optional[str]
+
+
+class PaginatedFallResponse(BaseModel):
+    ok:          bool = True
+    items:       List[FallItem]
+    total:       int
+    page:        int
+    page_size:   int
+    total_pages: int
+
+
+class StatsOverviewResponse(BaseModel):
+    total_users:            int
+    active_users:           int
+    total_falls_today:      int
+    total_falls_this_month: int
+    total_falls_all_time:   int
+
+
+class FallTimelineResponse(BaseModel):
+    group_by: str
+    labels:   List[str]
+    counts:   List[int]
+
+
+class AdminReportResponse(BaseModel):
+    id:          int
+    user_id:     int
+    user_email:  Optional[str]
+    user_name:   Optional[str]
+    category:    str
+    title:       str
+    description: str
+    status:      str
+    admin_reply: Optional[str]
+    replied_by:  Optional[int]
+    replied_at:  Optional[float]
+    created_at:  float
+    updated_at:  float
+    datetime_vn: str
+
+    model_config = {"from_attributes": True}
+
+
+class PaginatedAdminReportResponse(BaseModel):
+    ok:          bool = True
+    items:       List[AdminReportResponse]
+    total:       int
+    page:        int
+    page_size:   int
+    total_pages: int
+
+
+class UpdateReportStatusRequest(BaseModel):
+    status: Literal["pending", "in_progress", "resolved", "closed"]
+
+
+class ReplyReportRequest(BaseModel):
+    reply: str = Field(..., min_length=1, max_length=2000)
+
+
+class SendNotificationRequest(BaseModel):
+    title:   str         = Field(..., min_length=1, max_length=100)
+    body:    str         = Field(..., min_length=1, max_length=500)
+    user_id: Optional[int] = Field(None, description="Gửi đến user cụ thể. Bỏ trống = gửi tất cả")
+
+
+class SendNotificationResponse(BaseModel):
+    ok:     bool
+    sent:   int
+    failed: int

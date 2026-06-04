@@ -31,3 +31,11 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tài khoản đã bị vô hiệu hoá")
 
     return user
+
+
+async def get_current_admin(
+    current_user: UserDB = Depends(get_current_user),
+) -> UserDB:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Chỉ admin mới có quyền thực hiện thao tác này")
+    return current_user

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db.database import get_db
 from ..db.models import DeviceTokenDB, UserDB
 from ..services.dependencies import get_current_user
-from ..services.alert_service import get_device_status, send_sms, make_call_with_audio
+from ..services.alert_service import get_device_status, make_call_with_audio  # bỏ send_sms
 
 router = APIRouter()
 
@@ -75,28 +75,12 @@ async def adb_status(
     return get_device_status()
 
 
-class SmsRequest(BaseModel):
-    phone:   str
-    message: str
-
 class CallRequest(BaseModel):
-    phone: str
-
-@router.post("/adb/sms", summary="Gửi SMS qua thiết bị Android kết nối USB")
-async def adb_send_sms(
-    body:         SmsRequest,
-    current_user: UserDB = Depends(get_current_user),
-) -> dict:
-    ok = send_sms(body.phone, body.message)
-    return {"ok": ok}
+    phone:      str
+    audio_path: str | None = None
 
 
-class CallRequest(BaseModel):
-    phone: str
-    audio_path: str | None = None  # tuỳ chọn: đường dẫn file mp3/mp4 trên server
-
-
-@router.post("/adb/call", summary="Gọi điện + phát ghi âm + tự cúp qua Android USB")
+@router.post("/adb/call", summary="Gọi điện + phát mp3 qua loa laptop + tự cúp")
 async def adb_make_call(
     body:         CallRequest,
     current_user: UserDB = Depends(get_current_user),

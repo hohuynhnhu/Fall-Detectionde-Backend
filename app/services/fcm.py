@@ -53,6 +53,9 @@ async def send_fall_notification(
     confidence: float,
     event_id: int | None = None,
     clip_url: str | None = None,
+    sound_detected: bool = False,
+    sound_class: str = "",
+    sound_confidence: float = 0.0,
 ) -> None:
     if _firebase_app is None:
         return
@@ -64,19 +67,27 @@ async def send_fall_notification(
 
     time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
 
+    # Title thay đổi theo sound_detected
+    if sound_detected:
+        title = "⚠️ Té ngã + phát hiện tiếng rên!"
+        body  = f"Camera {camera_id} lúc {time_str} — {sound_class}"
+    else:
+        title = "Phát hiện té ngã!"
+        body  = f"Camera {camera_id} lúc {time_str}"
+
     message = messaging.MulticastMessage(
         tokens=tokens,
-        notification=messaging.Notification(
-            title="Phát hiện té ngã!",
-            body=f"Camera {camera_id} lúc {time_str}",
-        ),
+        notification=messaging.Notification(title=title, body=body),
         data={
-            "type":         "fall_alert",
-            "camera_id":    camera_id,
-            "timestamp":    str(timestamp),
-            "max_velocity": str(round(max_velocity, 2)),
-            "body_angle":   str(round(body_angle, 2)),
-            "confidence":   str(round(confidence, 2)),
+            "type":             "fall_alert",
+            "camera_id":        camera_id,
+            "timestamp":        str(timestamp),
+            "max_velocity":     str(round(max_velocity, 2)),
+            "body_angle":       str(round(body_angle, 2)),
+            "confidence":       str(round(confidence, 2)),
+            "sound_detected":   str(sound_detected).lower(),
+            "sound_class":      sound_class,
+            "sound_confidence": str(round(sound_confidence, 2)),
             **({"event_id": str(event_id)} if event_id is not None else {}),
             **({"clip_url": clip_url} if clip_url else {}),
         },
@@ -90,6 +101,7 @@ async def send_fall_notification(
             )
         ),
     )
+    
 
     loop = asyncio.get_running_loop()
     try:
@@ -169,7 +181,7 @@ async def send_pose_notification(
             **({"event_id": str(event_id)} if event_id is not None else {}),
         },
         android=messaging.AndroidConfig(
-            priority="hight",
+            priority="high",
             notification=messaging.AndroidNotification(sound="default"),
         ),
         apns=messaging.APNSConfig(

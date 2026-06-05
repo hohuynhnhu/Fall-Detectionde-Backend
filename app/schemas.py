@@ -108,6 +108,10 @@ class FallEvent(BaseModel):
     frame_id:         int           = 0
     clip_url:         Optional[str] = None
 
+    sound_detected:    bool          = False
+    sound_class:       str           = ""
+    sound_confidence:  float         = 0.0
+
 
 class PoseEvent(BaseModel):
     event_type:       EventType         = EventType.POSE_CHANGE
@@ -320,6 +324,9 @@ class WsFallAlert(BaseModel):
     body_angle: float
     confidence: float
     clip_url:   Optional[str] = None
+    sound_detected:   bool          = False
+    sound_class:      str           = ""
+    sound_confidence: float         = 0.0
 
 
 class WsStateUpdate(BaseModel):

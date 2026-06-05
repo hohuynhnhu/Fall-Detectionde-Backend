@@ -41,7 +41,7 @@ from ..services.websocket_manager import manager
 from ..services.fcm import send_fall_notification, send_pose_notification
 from ..services.dependencies import get_current_user
 from ..services.alert_service import alert_fall_via_adb
-
+from ..db.models import EmergencyContactDB
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -126,36 +126,41 @@ async def receive_fall(
 
     # Broadcast fall alert to all WebSocket clients
     alert = WsFallAlert(
-        camera_id  = event.camera_id,
-        timestamp  = ts,
-        velocity   = event.max_velocity,
-        body_angle = event.body_angle,
-        confidence = event.confidence,
-        clip_url   = event.clip_url,
+        camera_id        = event.camera_id,
+        timestamp        = ts,
+        velocity         = event.max_velocity,
+        body_angle       = event.body_angle,
+        confidence       = event.confidence,
+        clip_url         = event.clip_url,
+        sound_detected   = event.sound_detected,
+        sound_class      = event.sound_class,
+        sound_confidence = event.sound_confidence,
     )
     await manager.broadcast(alert.model_dump())
 
     await send_fall_notification(
-        db          = db,
-        camera_id   = event.camera_id,
-        timestamp   = ts,
-        max_velocity= event.max_velocity,
-        body_angle  = event.body_angle,
-        confidence  = event.confidence,
-        event_id    = row.id,
-        clip_url    = event.clip_url,
+        db               = db,
+        camera_id        = event.camera_id,
+        timestamp        = ts,
+        max_velocity     = event.max_velocity,
+        body_angle       = event.body_angle,
+        confidence       = event.confidence,
+        event_id         = row.id,
+        clip_url         = event.clip_url,
+        sound_detected   = event.sound_detected,
+        sound_class      = event.sound_class,
+        sound_confidence = event.sound_confidence,
     )
 
-    # ADB alert — gửi SMS + gọi điện qua Android kết nối USB
     contacts_rows = (await db.execute(
-        select(FamilyMemberDB).where(
-            FamilyMemberDB.notify_on_fall == True,  # noqa: E712
-        )
+        select(EmergencyContactDB).where(
+            EmergencyContactDB.is_active == True,  # noqa: E712
+        )  
     )).scalars().all()
     contacts = [
-        {"name": c.name, "phone": c.phone_number}
+        {"name": c.name, "phone": c.phone}
         for c in contacts_rows
-        if c.phone_number
+        if c.phone
     ]
     if contacts:
         _create_tracked_task(
@@ -163,7 +168,6 @@ async def receive_fall(
         )
 
     return {"ok": True, "id": row.id}
-
 
 @router.post("/pose", summary="Receive pose-change event from desktop app")
 async def receive_pose(
@@ -420,7 +424,20 @@ async def list_patient_poses(
         page_size   = page_size,
         total_pages = total_pages,
     )
-
+@router.patch("/fall/{event_id}", summary="Cập nhật clip_url cho fall event")
+async def update_fall_clip(
+    event_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row = await db.get(FallEventDB, event_id)
+    if not row:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Event not found")
+    if "clip_url" in body:
+        row.clip_url = body["clip_url"]
+    await db.commit()
+    return {"ok": True}
 
 @router.get(
     "/live",

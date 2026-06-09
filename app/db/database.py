@@ -55,6 +55,12 @@ async def init_db() -> None:
             text("ALTER TABLE fall_events ADD COLUMN IF NOT EXISTS clip_url VARCHAR(512)")
         )
         await conn.execute(
+            text("ALTER TABLE fall_events ADD COLUMN IF NOT EXISTS latitude FLOAT")
+        )
+        await conn.execute(
+            text("ALTER TABLE fall_events ADD COLUMN IF NOT EXISTS longitude FLOAT")
+        )
+        await conn.execute(
             text("ALTER TABLE emergency_contacts ADD COLUMN IF NOT EXISTS relation VARCHAR(64)")
         )
         await conn.execute(

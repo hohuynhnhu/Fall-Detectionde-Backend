@@ -33,6 +33,27 @@ async def get_current_user(
     return user
 
 
+async def get_optional_user(
+    authorization: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> UserDB | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+
+    token = authorization[7:]
+
+    try:
+        decoded = await verify_id_token(token)
+    except Exception:
+        return None
+
+    user = await get_user_by_uid(db, decoded["uid"])
+    if user is None or not user.is_active:
+        return None
+
+    return user
+
+
 async def get_current_admin(
     current_user: UserDB = Depends(get_current_user),
 ) -> UserDB:

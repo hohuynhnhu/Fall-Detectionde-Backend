@@ -15,7 +15,7 @@ import math
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,8 +39,9 @@ from ..schemas import (
 )
 from ..services.websocket_manager import manager
 from ..services.fcm import send_fall_notification, send_pose_notification
-from ..services.dependencies import get_current_user
+from ..services.dependencies import get_current_user, get_optional_user
 from ..services.alert_service import alert_fall_via_adb
+from ..services.email_service import send_report_reply_email
 from ..db.models import EmergencyContactDB
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -119,6 +120,8 @@ async def receive_fall(
         confidence    = event.confidence,
         frame_id      = event.frame_id,
         clip_url      = event.clip_url,
+        latitude      = event.gps.latitude if event.gps else None,
+        longitude     = event.gps.longitude if event.gps else None,
     )
     db.add(row)
     await db.commit()
@@ -132,6 +135,8 @@ async def receive_fall(
         body_angle       = event.body_angle,
         confidence       = event.confidence,
         clip_url         = event.clip_url,
+        latitude         = event.gps.latitude if event.gps else None,
+        longitude        = event.gps.longitude if event.gps else None,
         sound_detected   = event.sound_detected,
         sound_class      = event.sound_class,
         sound_confidence = event.sound_confidence,
@@ -147,11 +152,30 @@ async def receive_fall(
         confidence       = event.confidence,
         event_id         = row.id,
         clip_url         = event.clip_url,
+        latitude         = event.gps.latitude if event.gps else None,
+        longitude        = event.gps.longitude if event.gps else None,
         sound_detected   = event.sound_detected,
         sound_class      = event.sound_class,
         sound_confidence = event.sound_confidence,
     )
-
+    # Gửi email cho tất cả user active
+    from sqlalchemy import select as _select
+    time_str = datetime.fromtimestamp(ts, tz=_VN_TZ).strftime("%H:%M:%S %d/%m/%Y")
+    all_users = (await db.execute(
+        _select(UserDB).where(
+            UserDB.email.isnot(None),
+            UserDB.is_active == True,  # noqa: E712
+        )
+    )).scalars().all()
+    for user in all_users:
+        if user.email:
+            await send_report_reply_email(
+                to_email     = user.email,
+                user_name    = user.display_name or user.email,
+                report_title = f"⚠️ Phát hiện té ngã lúc {time_str}",
+                reply        = f"Camera {event.camera_id} phát hiện té ngã lúc {time_str}.\n\nVận tốc: {round(event.max_velocity, 1)} px/s\nĐộ tin cậy: {round(event.confidence * 100, 1)}%",
+            )
+            
     contacts_rows = (await db.execute(
         select(EmergencyContactDB).where(
             EmergencyContactDB.is_active == True,  # noqa: E712
@@ -265,8 +289,21 @@ async def list_falls(
     camera_id: str | None = Query(None, description="Filter by camera ID"),
     page:      int        = Query(1,    ge=1,  description="1-indexed page number"),
     page_size: int        = Query(20,   ge=1, le=100, description="Items per page"),
+    current_user: UserDB | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[FallEventResponse]:
+
+    # Nếu mobile có token → chỉ lấy falls của bệnh nhân thuộc tài khoản này
+    patient_camera_ids: list[str] | None = None
+    if current_user:
+        patient_rows = (await db.execute(
+            select(FamilyMemberDB.camera_id).where(
+                FamilyMemberDB.user_id    == current_user.id,
+                FamilyMemberDB.is_patient == True,
+                FamilyMemberDB.camera_id.isnot(None),
+            )
+        )).scalars().all()
+        patient_camera_ids = list(set(patient_rows))
 
     base_q = select(FallEventDB).order_by(desc(FallEventDB.timestamp))
     count_q = select(func.count()).select_from(FallEventDB)
@@ -274,6 +311,9 @@ async def list_falls(
     if camera_id:
         base_q  = base_q.where(FallEventDB.camera_id == camera_id)
         count_q = count_q.where(FallEventDB.camera_id == camera_id)
+    elif patient_camera_ids:
+        base_q  = base_q.where(FallEventDB.camera_id.in_(patient_camera_ids))
+        count_q = count_q.where(FallEventDB.camera_id.in_(patient_camera_ids))
 
     total: int = (await db.execute(count_q)).scalar() or 0
     total_pages = max(1, math.ceil(total / page_size))
@@ -295,6 +335,8 @@ async def list_falls(
             confidence   = r.confidence,
             acknowledged = r.acknowledged,
             clip_url     = r.clip_url,
+            latitude     = r.latitude,
+            longitude    = r.longitude,
             datetime_vn  = datetime.fromtimestamp(r.timestamp, tz=_VN_TZ).strftime("%H:%M %d/%m/%Y"),
         )
         for r in rows
@@ -307,6 +349,40 @@ async def list_falls(
         page        = page,
         page_size   = page_size,
         total_pages = total_pages,
+    )
+
+
+@router.get(
+    "/falls/{event_id}",
+    response_model=FallEventResponse,
+    summary="Get single fall event by ID",
+)
+async def get_fall_by_id(
+    event_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> FallEventResponse:
+    from sqlalchemy import select as _select
+    r = (await db.execute(
+        _select(FallEventDB).where(FallEventDB.id == event_id)
+    )).scalar_one_or_none()
+
+    if r is None:
+        raise HTTPException(status_code=404, detail="Fall event not found")
+
+    return FallEventResponse(
+        id           = r.id,
+        camera_id    = r.camera_id,
+        timestamp    = r.timestamp,
+        state_before = r.state_before,
+        velocity     = r.velocity_px_s,
+        max_velocity = r.max_velocity,
+        body_angle   = r.body_angle,
+        confidence   = r.confidence,
+        acknowledged = r.acknowledged,
+        clip_url     = r.clip_url,
+        latitude     = r.latitude,
+        longitude    = r.longitude,
+        datetime_vn  = datetime.fromtimestamp(r.timestamp, tz=_VN_TZ).strftime("%H:%M %d/%m/%Y"),
     )
 
 

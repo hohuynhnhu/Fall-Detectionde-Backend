@@ -34,6 +34,7 @@ from ..schemas import (
 )
 from ..services.dependencies import get_current_admin
 from ..services.fcm import send_admin_notification, send_report_reply_notification
+from ..services.email_service import send_report_reply_email
 from ..services.firebase_service import delete_firebase_user
 
 router = APIRouter()
@@ -54,6 +55,8 @@ def _fall_item(r: FallEventDB) -> FallItem:
         confidence   = r.confidence,
         acknowledged = r.acknowledged,
         clip_url     = r.clip_url,
+        latitude     = r.latitude,
+        longitude    = r.longitude,
     )
 
 
@@ -355,11 +358,49 @@ async def stats_falls(
     total_pages = max(1, math.ceil(total / page_size))
     rows        = (await db.execute(base_q.offset((page - 1) * page_size).limit(page_size))).scalars().all()
 
+    # Lấy user theo camera_id → FamilyMemberDB → UserDB
+    camera_ids = list({r.camera_id for r in rows if r.camera_id})
+    camera_to_user: dict[str, UserDB] = {}
+    if camera_ids:
+        members = (await db.execute(
+            select(FamilyMemberDB).where(
+                FamilyMemberDB.camera_id.in_(camera_ids),
+                FamilyMemberDB.is_patient == True,  # noqa: E712
+            )
+        )).scalars().all()
+        user_ids = list({m.user_id for m in members})
+        users = (await db.execute(
+            select(UserDB).where(UserDB.id.in_(user_ids))
+        )).scalars().all()
+        users_map = {u.id: u for u in users}
+        for m in members:
+            if m.camera_id and m.user_id in users_map:
+                camera_to_user[m.camera_id] = users_map[m.user_id]
+
+    def _fall_item_with_user(r: FallEventDB) -> FallItem:
+        user = camera_to_user.get(r.camera_id)
+        return FallItem(
+            id           = r.id,
+            camera_id    = r.camera_id,
+            timestamp    = r.timestamp,
+            datetime_vn  = datetime.fromtimestamp(r.timestamp, tz=_VN_TZ).strftime("%H:%M %d/%m/%Y"),
+            state_before = r.state_before,
+            velocity     = r.velocity_px_s,
+            max_velocity = r.max_velocity,
+            body_angle   = r.body_angle,
+            confidence   = r.confidence,
+            acknowledged = r.acknowledged,
+            clip_url     = r.clip_url,
+            latitude     = r.latitude,
+            longitude    = r.longitude,
+            user_name    = user.display_name if user else None,
+            user_email   = user.email if user else None,
+        )
+
     return PaginatedFallResponse(
-        items=[_fall_item(r) for r in rows],
+        items=[_fall_item_with_user(r) for r in rows],
         total=total, page=page, page_size=page_size, total_pages=total_pages,
     )
-
 
 @router.get("/stats/falls/timeline", response_model=FallTimelineResponse,
             summary="Biểu đồ số lần fall theo ngày / tuần / tháng")
@@ -534,6 +575,14 @@ async def admin_reply_report(
         reply     = report.admin_reply,
     )
 
+    if user and user.email:
+        await send_report_reply_email(
+            to_email     = user.email,
+            user_name    = user.display_name or user.email,
+            report_title = report.title,
+            reply        = report.admin_reply,
+        )
+
     return _admin_report_item(report, user)
 
 
@@ -552,16 +601,50 @@ async def admin_send_notification(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail="Người dùng không tồn tại")
 
+    # Resolve user từ email nếu có
+    target_user = None
+    if body.email and body.user_id is None:
+        target_user = (await db.execute(
+            select(UserDB).where(UserDB.email == body.email)
+        )).scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Không tìm thấy user với email này")
+        user_id_for_fcm = target_user.id
+    else:
+        user_id_for_fcm = body.user_id
+
     result = await send_admin_notification(
         db      = db,
         title   = body.title.strip(),
         body    = body.body.strip(),
-        user_id = body.user_id,
+        user_id = user_id_for_fcm,
     )
 
     if not result.get("ok"):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail=result.get("reason", "FCM error"))
+
+    # Gửi email
+    if body.email and target_user:
+        await send_report_reply_email(
+            to_email     = body.email,
+            user_name    = target_user.display_name or body.email,
+            report_title = body.title.strip(),
+            reply        = body.body.strip(),
+        )
+    elif body.user_id is None and not body.email:
+        # Broadcast → gửi email tất cả user active
+        all_users = (await db.execute(
+            select(UserDB).where(UserDB.email.isnot(None), UserDB.is_active == True)
+        )).scalars().all()
+        for u in all_users:
+            if u.email:
+                await send_report_reply_email(
+                    to_email     = u.email,
+                    user_name    = u.display_name or u.email,
+                    report_title = body.title.strip(),
+                    reply        = body.body.strip(),
+                )
 
     return SendNotificationResponse(
         ok     = True,

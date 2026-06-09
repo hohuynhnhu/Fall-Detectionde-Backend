@@ -82,6 +82,13 @@ class FeatureConfigUpdate(BaseModel):
     sound_listen_seconds:    Optional[float] = None
 
 
+# ── GPS ────────────────────────────────────────────────────────────────────
+
+class GpsLocation(BaseModel):
+    latitude: float
+    longitude: float
+
+
 # ── Inbound payloads (desktop → backend) ─────────────────────────────────────
 
 class BodyMetricsPayload(BaseModel):
@@ -107,6 +114,7 @@ class FallEvent(BaseModel):
     confidence:       float         = 0.0
     frame_id:         int           = 0
     clip_url:         Optional[str] = None
+    gps:              Optional[GpsLocation] = None
 
     sound_detected:    bool          = False
     sound_class:       str           = ""
@@ -154,6 +162,8 @@ class FallEventResponse(BaseModel):
     confidence:   Optional[float]
     acknowledged: bool
     clip_url:     Optional[str]     = None
+    latitude:     Optional[float]   = None
+    longitude:    Optional[float]   = None
     datetime_vn:  Optional[str]     = None
 
     model_config = {"from_attributes": True}
@@ -324,6 +334,8 @@ class WsFallAlert(BaseModel):
     body_angle: float
     confidence: float
     clip_url:   Optional[str] = None
+    latitude:   Optional[float] = None
+    longitude:  Optional[float] = None
     sound_detected:   bool          = False
     sound_class:      str           = ""
     sound_confidence: float         = 0.0
@@ -440,6 +452,10 @@ class FallItem(BaseModel):
     confidence:   Optional[float]
     acknowledged: bool
     clip_url:     Optional[str]
+    latitude:     Optional[float] = None
+    longitude:    Optional[float] = None
+    user_name:    Optional[str] = None   # ← thêm
+    user_email:   Optional[str] = None 
 
 
 class PaginatedFallResponse(BaseModel):
@@ -502,10 +518,10 @@ class ReplyReportRequest(BaseModel):
 
 
 class SendNotificationRequest(BaseModel):
-    title:   str         = Field(..., min_length=1, max_length=100)
-    body:    str         = Field(..., min_length=1, max_length=500)
+    title:   str           = Field(..., min_length=1, max_length=100)
+    body:    str           = Field(..., min_length=1, max_length=500)
     user_id: Optional[int] = Field(None, description="Gửi đến user cụ thể. Bỏ trống = gửi tất cả")
-
+    email:   Optional[str] = Field(None, description="Email người nhận cụ thể")
 
 class SendNotificationResponse(BaseModel):
     ok:     bool

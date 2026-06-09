@@ -21,6 +21,9 @@ class FallEventDB(Base):
     frame_id      = Column(Integer)
     clip_url      = Column(String(512), nullable=True)
     acknowledged  = Column(Boolean, default=False, nullable=False)
+    latitude      = Column(Float, nullable=True)
+    longitude     = Column(Float, nullable=True)
+
 
 
 class PoseEventDB(Base):
